@@ -52,7 +52,8 @@ void start() {
     // init uart and printf
     consoleinit();
     printfinit();
-  }
+    printf("[210110627] in start, init driver, interrupts and change mode\n");
+  } 
 
   // switch to supervisor mode and jump to main().
   asm volatile("mret");
