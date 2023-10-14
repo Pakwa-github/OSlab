@@ -37,3 +37,5 @@ entry("sbrk");
 entry("sleep");
 entry("uptime");
 entry("rename");
+# Pakwa lab2
+entry("yield");

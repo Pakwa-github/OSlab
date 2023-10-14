@@ -271,6 +271,10 @@ int fork(void) {
 // Caller must hold p->lock.
 void reparent(struct proc *p) {
   struct proc *pp;
+  // Pakwa lab2
+  int childnum = 0;
+  char *s[] = {"UNUSED", "SLEEPING", "RUNNABLE", "RUNNING", "ZOMBIE"};
+
 
   for (pp = proc; pp < &proc[NPROC]; pp++) {
     // this code uses pp->parent without holding pp->lock.
@@ -281,6 +285,11 @@ void reparent(struct proc *p) {
       // pp->parent can't change between the check and the acquire()
       // because only the parent changes it, and we're the parent.
       acquire(&pp->lock);
+
+      // Pakwa lab2
+      exit_info("proc %d exit, child %d, pid %d, name %s, state %s\n", p->pid, childnum, pp->pid, pp->name, s[pp->state]);
+      childnum++;
+
       pp->parent = initproc;
       // we should wake up init here, but that would require
       // initproc->lock, which would be a deadlock, since we hold
@@ -296,6 +305,7 @@ void reparent(struct proc *p) {
 // until its parent calls wait().
 void exit(int status) {
   struct proc *p = myproc();
+  char *s[] = {"UNUSED", "SLEEPING", "RUNNABLE", "RUNNING", "ZOMBIE"};
 
   if (p == initproc) panic("init exiting");
 
@@ -338,6 +348,9 @@ void exit(int status) {
 
   acquire(&p->lock);
 
+  // Pakwa lab2
+  exit_info("proc %d exit, parent pid %d, name %s, state %s\n", p->pid, original_parent->pid, p->name, s[p->state]);
+
   // Give any children to init.
   reparent(p);
 
@@ -356,7 +369,8 @@ void exit(int status) {
 
 // Wait for a child process to exit and return its pid.
 // Return -1 if this process has no children.
-int wait(uint64 addr) {
+// Pakwa lab2
+int wait(uint64 addr, int flags) {
   struct proc *np;
   int havekids, pid;
   struct proc *p = myproc();
@@ -395,7 +409,7 @@ int wait(uint64 addr) {
     }
 
     // No point waiting if we don't have any children.
-    if (!havekids || p->killed) {
+    if (!havekids || p->killed || flags) {
       release(&p->lock);
       return -1;
     }

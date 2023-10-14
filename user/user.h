@@ -24,6 +24,8 @@ char* sbrk(int);
 int sleep(int);
 int uptime(void);
 int rename(const char*);
+// Pakwa lab2
+int yield(void);
 
 // ulib.c
 int stat(const char*, struct stat*);
