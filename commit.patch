@@ -1,0 +1,634 @@
+diff --git a/Makefile b/Makefile
+index bf95a78..5e4c5ea 100644
+--- a/Makefile
++++ b/Makefile
+@@ -161,6 +161,7 @@ UPROGS=\
+ 	$U/_zombie\
+ 	$U/_waittest\
+ 	$U/_exittest\
++	$U/_yieldtest\
+ 
+ 
+ ifeq ($(LAB),trap)
+diff --git a/kernel/defs.h b/kernel/defs.h
+index ecea5e6..54e2e91 100644
+--- a/kernel/defs.h
++++ b/kernel/defs.h
+@@ -108,7 +108,8 @@ void            sched(void);
+ void            setproc(struct proc*);
+ void            sleep(void*, struct spinlock*);
+ void            userinit(void);
+-int             wait(uint64);
++// Pakwa lab2
++int             wait(uint64, int);
+ void            wakeup(void*);
+ void            yield(void);
+ int             either_copyout(int user_dst, uint64 dst, void *src, uint64 len);
+diff --git a/kernel/proc.c b/kernel/proc.c
+index 1607145..47d6c9e 100644
+--- a/kernel/proc.c
++++ b/kernel/proc.c
+@@ -271,6 +271,10 @@ int fork(void) {
+ // Caller must hold p->lock.
+ void reparent(struct proc *p) {
+   struct proc *pp;
++  // Pakwa lab2
++  int childnum = 0;
++  char *s[] = {"UNUSED", "SLEEPING", "RUNNABLE", "RUNNING", "ZOMBIE"};
++
+ 
+   for (pp = proc; pp < &proc[NPROC]; pp++) {
+     // this code uses pp->parent without holding pp->lock.
+@@ -281,6 +285,11 @@ void reparent(struct proc *p) {
+       // pp->parent can't change between the check and the acquire()
+       // because only the parent changes it, and we're the parent.
+       acquire(&pp->lock);
++
++      // Pakwa lab2
++      exit_info("proc %d exit, child %d, pid %d, name %s, state %s\n", p->pid, childnum, pp->pid, pp->name, s[pp->state]);
++      childnum++;
++
+       pp->parent = initproc;
+       // we should wake up init here, but that would require
+       // initproc->lock, which would be a deadlock, since we hold
+@@ -296,6 +305,7 @@ void reparent(struct proc *p) {
+ // until its parent calls wait().
+ void exit(int status) {
+   struct proc *p = myproc();
++  char *s[] = {"UNUSED", "SLEEPING", "RUNNABLE", "RUNNING", "ZOMBIE"};
+ 
+   if (p == initproc) panic("init exiting");
+ 
+@@ -338,6 +348,9 @@ void exit(int status) {
+ 
+   acquire(&p->lock);
+ 
++  // Pakwa lab2
++  exit_info("proc %d exit, parent pid %d, name %s, state %s\n", p->pid, original_parent->pid, p->name, s[p->state]);
++
+   // Give any children to init.
+   reparent(p);
+ 
+@@ -356,7 +369,8 @@ void exit(int status) {
+ 
+ // Wait for a child process to exit and return its pid.
+ // Return -1 if this process has no children.
+-int wait(uint64 addr) {
++// Pakwa lab2
++int wait(uint64 addr, int flags) {
+   struct proc *np;
+   int havekids, pid;
+   struct proc *p = myproc();
+@@ -395,7 +409,7 @@ int wait(uint64 addr) {
+     }
+ 
+     // No point waiting if we don't have any children.
+-    if (!havekids || p->killed) {
++    if (!havekids || p->killed || flags) {
+       release(&p->lock);
+       return -1;
+     }
+diff --git a/kernel/syscall.c b/kernel/syscall.c
+index 4c97875..2badd68 100644
+--- a/kernel/syscall.c
++++ b/kernel/syscall.c
+@@ -39,6 +39,9 @@ static uint64 argraw(int n) {
+       return p->trapframe->a4;
+     case 5:
+       return p->trapframe->a5;
++    // Pakwa lab2
++    case 83:
++      return p->trapframe->epc;
+   }
+   panic("argraw");
+   return -1;
+@@ -89,14 +92,17 @@ extern uint64 sys_wait(void);
+ extern uint64 sys_write(void);
+ extern uint64 sys_uptime(void);
+ extern uint64 sys_rename(void);
++// Pakwa lab2
++extern uint64 sys_yield(void);
+ 
++// Pakwa lab2
+ static uint64 (*syscalls[])(void) = {
+     [SYS_fork] sys_fork,   [SYS_exit] sys_exit,     [SYS_wait] sys_wait,     [SYS_pipe] sys_pipe,
+     [SYS_read] sys_read,   [SYS_kill] sys_kill,     [SYS_exec] sys_exec,     [SYS_fstat] sys_fstat,
+     [SYS_chdir] sys_chdir, [SYS_dup] sys_dup,       [SYS_getpid] sys_getpid, [SYS_sbrk] sys_sbrk,
+     [SYS_sleep] sys_sleep, [SYS_uptime] sys_uptime, [SYS_open] sys_open,     [SYS_write] sys_write,
+     [SYS_mknod] sys_mknod, [SYS_unlink] sys_unlink, [SYS_link] sys_link,     [SYS_mkdir] sys_mkdir,
+-    [SYS_close] sys_close, [SYS_rename] sys_rename,
++    [SYS_close] sys_close, [SYS_rename] sys_rename, [SYS_yield] sys_yield,
+ };
+ 
+ void syscall(void) {
+diff --git a/kernel/syscall.h b/kernel/syscall.h
+index 6998f87..b2670d6 100644
+--- a/kernel/syscall.h
++++ b/kernel/syscall.h
+@@ -21,3 +21,5 @@
+ #define SYS_mkdir  20
+ #define SYS_close  21
+ #define SYS_rename 22
++// Pakwa lab2
++#define SYS_yield  83
+diff --git a/kernel/sysproc.c b/kernel/sysproc.c
+index a69071e..7150e48 100644
+--- a/kernel/sysproc.c
++++ b/kernel/sysproc.c
+@@ -18,10 +18,14 @@ uint64 sys_getpid(void) { return myproc()->pid; }
+ 
+ uint64 sys_fork(void) { return fork(); }
+ 
++// Pakwa lab2
+ uint64 sys_wait(void) {
+   uint64 p;
++  int pp;
+   if (argaddr(0, &p) < 0) return -1;
+-  return wait(p);
++  // Pakwa lab2
++  if (argint(1, &pp) < 0) return -1;
++  return wait(p, pp);
+ }
+ 
+ uint64 sys_sbrk(void) {
+@@ -81,3 +85,12 @@ uint64 sys_rename(void) {
+   p->name[len] = '\0';
+   return 0;
+ }
++
++// Pakwa lab2
++uint64 sys_yield(void) {
++  uint64 pc;
++  if (argaddr(83, &pc) < 0) return -1;
++  printf("start to yield, user pc %p\n", pc);
++  yield();
++  return 0;
++}
+diff --git a/time.txt b/time.txt
+new file mode 100644
+index 0000000..ec63514
+--- /dev/null
++++ b/time.txt
+@@ -0,0 +1 @@
++9
+diff --git a/user/.nfs0000000003106af3000016d5 b/user/.nfs0000000003106af3000016d5
+new file mode 100644
+index 0000000..c916df5
+--- /dev/null
++++ b/user/.nfs0000000003106af3000016d5
+@@ -0,0 +1,432 @@
++// Shell.
++
++#include "kernel/types.h"
++#include "user/user.h"
++#include "kernel/fcntl.h"
++
++// Parsed command representation
++#define EXEC 1
++#define REDIR 2
++#define PIPE 3
++#define LIST 4
++#define BACK 5
++
++#define MAXARGS 10
++
++struct cmd {
++  int type;
++};
++
++struct execcmd {
++  int type;
++  char *argv[MAXARGS];
++  char *eargv[MAXARGS];
++};
++
++struct redircmd {
++  int type;
++  struct cmd *cmd;
++  char *file;
++  char *efile;
++  int mode;
++  int fd;
++};
++
++struct pipecmd {
++  int type;
++  struct cmd *left;
++  struct cmd *right;
++};
++
++struct listcmd {
++  int type;
++  struct cmd *left;
++  struct cmd *right;
++};
++
++struct backcmd {
++  int type;
++  struct cmd *cmd;
++};
++
++int fork1(void);  // Fork but panics on failure.
++void panic(char *);
++struct cmd *parsecmd(char *);
++
++// Execute cmd.  Never returns.
++void runcmd(struct cmd *cmd) {
++  int p[2];
++  struct backcmd *bcmd;
++  struct execcmd *ecmd;
++  struct listcmd *lcmd;
++  struct pipecmd *pcmd;
++  struct redircmd *rcmd;
++
++  if (cmd == 0) exit(1);
++
++  switch (cmd->type) {
++    default:
++      panic("runcmd");
++
++    case EXEC:
++      ecmd = (struct execcmd *)cmd;
++      if (ecmd->argv[0] == 0) exit(1);
++      exec(ecmd->argv[0], ecmd->argv);
++      fprintf(2, "exec %s failed\n", ecmd->argv[0]);
++      break;
++
++    case REDIR:
++      rcmd = (struct redircmd *)cmd;
++      close(rcmd->fd);
++      if (open(rcmd->file, rcmd->mode) < 0) {
++        fprintf(2, "open %s failed\n", rcmd->file);
++        exit(1);
++      }
++      runcmd(rcmd->cmd);
++      break;
++
++    case LIST:
++      lcmd = (struct listcmd *)cmd;
++      if (fork1() == 0) runcmd(lcmd->left);
++      wait(0, 0);
++      runcmd(lcmd->right);
++      break;
++
++    case PIPE:
++      pcmd = (struct pipecmd *)cmd;
++      if (pipe(p) < 0) panic("pipe");
++      if (fork1() == 0) {
++        close(1);
++        dup(p[1]);
++        close(p[0]);
++        close(p[1]);
++        runcmd(pcmd->left);
++      }
++      if (fork1() == 0) {
++        close(0);
++        dup(p[0]);
++        close(p[0]);
++        close(p[1]);
++        runcmd(pcmd->right);
++      }
++      close(p[0]);
++      close(p[1]);
++      wait(0, 0);
++      wait(0, 0);
++      break;
++
++    case BACK:
++      bcmd = (struct backcmd *)cmd;
++      if (fork1() == 0) runcmd(bcmd->cmd);
++      break;
++  }
++  exit(0);
++}
++
++int getcmd(char *buf, int nbuf) {
++  fprintf(2, "$ ");
++  memset(buf, 0, nbuf);
++  gets(buf, nbuf);
++  if (buf[0] == 0)  // EOF
++    return -1;
++  return 0;
++}
++
++int main(void) {
++  static char buf[100];
++  int fd;
++
++  // Ensure that three file descriptors are open.
++  while ((fd = open("console", O_RDWR)) >= 0) {
++    if (fd >= 3) {
++      close(fd);
++      break;
++    }
++  }
++
++  // Read and run input commands.
++  while (getcmd(buf, sizeof(buf)) >= 0) {
++    if (buf[0] == 'c' && buf[1] == 'd' && buf[2] == ' ') {
++      // Chdir must be called by the parent, not the child.
++      buf[strlen(buf) - 1] = 0;  // chop \n
++      if (chdir(buf + 3) < 0) fprintf(2, "cannot cd %s\n", buf + 3);
++      continue;
++    }
++    if (fork1() == 0) runcmd(parsecmd(buf));
++    wait(0, 0);
++  }
++  exit(0);
++}
++
++void panic(char *s) {
++  fprintf(2, "%s\n", s);
++  exit(1);
++}
++
++int fork1(void) {
++  int pid;
++
++  pid = fork();
++  if (pid == -1) panic("fork");
++  return pid;
++}
++
++// PAGEBREAK!
++//  Constructors
++
++struct cmd *execcmd(void) {
++  struct execcmd *cmd;
++
++  cmd = malloc(sizeof(*cmd));
++  memset(cmd, 0, sizeof(*cmd));
++  cmd->type = EXEC;
++  return (struct cmd *)cmd;
++}
++
++struct cmd *redircmd(struct cmd *subcmd, char *file, char *efile, int mode, int fd) {
++  struct redircmd *cmd;
++
++  cmd = malloc(sizeof(*cmd));
++  memset(cmd, 0, sizeof(*cmd));
++  cmd->type = REDIR;
++  cmd->cmd = subcmd;
++  cmd->file = file;
++  cmd->efile = efile;
++  cmd->mode = mode;
++  cmd->fd = fd;
++  return (struct cmd *)cmd;
++}
++
++struct cmd *pipecmd(struct cmd *left, struct cmd *right) {
++  struct pipecmd *cmd;
++
++  cmd = malloc(sizeof(*cmd));
++  memset(cmd, 0, sizeof(*cmd));
++  cmd->type = PIPE;
++  cmd->left = left;
++  cmd->right = right;
++  return (struct cmd *)cmd;
++}
++
++struct cmd *listcmd(struct cmd *left, struct cmd *right) {
++  struct listcmd *cmd;
++
++  cmd = malloc(sizeof(*cmd));
++  memset(cmd, 0, sizeof(*cmd));
++  cmd->type = LIST;
++  cmd->left = left;
++  cmd->right = right;
++  return (struct cmd *)cmd;
++}
++
++struct cmd *backcmd(struct cmd *subcmd) {
++  struct backcmd *cmd;
++
++  cmd = malloc(sizeof(*cmd));
++  memset(cmd, 0, sizeof(*cmd));
++  cmd->type = BACK;
++  cmd->cmd = subcmd;
++  return (struct cmd *)cmd;
++}
++// PAGEBREAK!
++//  Parsing
++
++char whitespace[] = " \t\r\n\v";
++char symbols[] = "<|>&;()";
++
++int gettoken(char **ps, char *es, char **q, char **eq) {
++  char *s;
++  int ret;
++
++  s = *ps;
++  while (s < es && strchr(whitespace, *s)) s++;
++  if (q) *q = s;
++  ret = *s;
++  switch (*s) {
++    case 0:
++      break;
++    case '|':
++    case '(':
++    case ')':
++    case ';':
++    case '&':
++    case '<':
++      s++;
++      break;
++    case '>':
++      s++;
++      if (*s == '>') {
++        ret = '+';
++        s++;
++      }
++      break;
++    default:
++      ret = 'a';
++      while (s < es && !strchr(whitespace, *s) && !strchr(symbols, *s)) s++;
++      break;
++  }
++  if (eq) *eq = s;
++
++  while (s < es && strchr(whitespace, *s)) s++;
++  *ps = s;
++  return ret;
++}
++
++int peek(char **ps, char *es, char *toks) {
++  char *s;
++
++  s = *ps;
++  while (s < es && strchr(whitespace, *s)) s++;
++  *ps = s;
++  return *s && strchr(toks, *s);
++}
++
++struct cmd *parseline(char **, char *);
++struct cmd *parsepipe(char **, char *);
++struct cmd *parseexec(char **, char *);
++struct cmd *nulterminate(struct cmd *);
++
++struct cmd *parsecmd(char *s) {
++  char *es;
++  struct cmd *cmd;
++
++  es = s + strlen(s);
++  cmd = parseline(&s, es);
++  peek(&s, es, "");
++  if (s != es) {
++    fprintf(2, "leftovers: %s\n", s);
++    panic("syntax");
++  }
++  nulterminate(cmd);
++  return cmd;
++}
++
++struct cmd *parseline(char **ps, char *es) {
++  struct cmd *cmd;
++
++  cmd = parsepipe(ps, es);
++  while (peek(ps, es, "&")) {
++    gettoken(ps, es, 0, 0);
++    cmd = backcmd(cmd);
++  }
++  if (peek(ps, es, ";")) {
++    gettoken(ps, es, 0, 0);
++    cmd = listcmd(cmd, parseline(ps, es));
++  }
++  return cmd;
++}
++
++struct cmd *parsepipe(char **ps, char *es) {
++  struct cmd *cmd;
++
++  cmd = parseexec(ps, es);
++  if (peek(ps, es, "|")) {
++    gettoken(ps, es, 0, 0);
++    cmd = pipecmd(cmd, parsepipe(ps, es));
++  }
++  return cmd;
++}
++
++struct cmd *parseredirs(struct cmd *cmd, char **ps, char *es) {
++  int tok;
++  char *q, *eq;
++
++  while (peek(ps, es, "<>")) {
++    tok = gettoken(ps, es, 0, 0);
++    if (gettoken(ps, es, &q, &eq) != 'a') panic("missing file for redirection");
++    switch (tok) {
++      case '<':
++        cmd = redircmd(cmd, q, eq, O_RDONLY, 0);
++        break;
++      case '>':
++        cmd = redircmd(cmd, q, eq, O_WRONLY | O_CREATE | O_TRUNC, 1);
++        break;
++      case '+':  // >>
++        cmd = redircmd(cmd, q, eq, O_WRONLY | O_CREATE, 1);
++        break;
++    }
++  }
++  return cmd;
++}
++
++struct cmd *parseblock(char **ps, char *es) {
++  struct cmd *cmd;
++
++  if (!peek(ps, es, "(")) panic("parseblock");
++  gettoken(ps, es, 0, 0);
++  cmd = parseline(ps, es);
++  if (!peek(ps, es, ")")) panic("syntax - missing )");
++  gettoken(ps, es, 0, 0);
++  cmd = parseredirs(cmd, ps, es);
++  return cmd;
++}
++
++struct cmd *parseexec(char **ps, char *es) {
++  char *q, *eq;
++  int tok, argc;
++  struct execcmd *cmd;
++  struct cmd *ret;
++
++  if (peek(ps, es, "(")) return parseblock(ps, es);
++
++  ret = execcmd();
++  cmd = (struct execcmd *)ret;
++
++  argc = 0;
++  ret = parseredirs(ret, ps, es);
++  while (!peek(ps, es, "|)&;")) {
++    if ((tok = gettoken(ps, es, &q, &eq)) == 0) break;
++    if (tok != 'a') panic("syntax");
++    cmd->argv[argc] = q;
++    cmd->eargv[argc] = eq;
++    argc++;
++    if (argc >= MAXARGS) panic("too many args");
++    ret = parseredirs(ret, ps, es);
++  }
++  cmd->argv[argc] = 0;
++  cmd->eargv[argc] = 0;
++  return ret;
++}
++
++// NUL-terminate all the counted strings.
++struct cmd *nulterminate(struct cmd *cmd) {
++  int i;
++  struct backcmd *bcmd;
++  struct execcmd *ecmd;
++  struct listcmd *lcmd;
++  struct pipecmd *pcmd;
++  struct redircmd *rcmd;
++
++  if (cmd == 0) return 0;
++
++  switch (cmd->type) {
++    case EXEC:
++      ecmd = (struct execcmd *)cmd;
++      for (i = 0; ecmd->argv[i]; i++) *ecmd->eargv[i] = 0;
++      break;
++
++    case REDIR:
++      rcmd = (struct redircmd *)cmd;
++      nulterminate(rcmd->cmd);
++      *rcmd->efile = 0;
++      break;
++
++    case PIPE:
++      pcmd = (struct pipecmd *)cmd;
++      nulterminate(pcmd->left);
++      nulterminate(pcmd->right);
++      break;
++
++    case LIST:
++      lcmd = (struct listcmd *)cmd;
++      nulterminate(lcmd->left);
++      nulterminate(lcmd->right);
++      break;
++
++    case BACK:
++      bcmd = (struct backcmd *)cmd;
++      nulterminate(bcmd->cmd);
++      break;
++  }
++  return cmd;
++}
+diff --git a/user/user.h b/user/user.h
+index ec47d9d..0e2046b 100644
+--- a/user/user.h
++++ b/user/user.h
+@@ -24,6 +24,8 @@ char* sbrk(int);
+ int sleep(int);
+ int uptime(void);
+ int rename(const char*);
++// Pakwa lab2
++int yield(void);
+ 
+ // ulib.c
+ int stat(const char*, struct stat*);
+diff --git a/user/usys.pl b/user/usys.pl
+index 3a2f6c4..407e779 100755
+--- a/user/usys.pl
++++ b/user/usys.pl
+@@ -37,3 +37,5 @@ entry("sbrk");
+ entry("sleep");
+ entry("uptime");
+ entry("rename");
++# Pakwa lab2
++entry("yield");
