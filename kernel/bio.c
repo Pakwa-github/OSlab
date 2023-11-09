@@ -38,6 +38,9 @@ struct {
   //struct buf head;
 
   struct buf hashbucket[NBUCKETS];
+
+  struct spinlock biglock;
+
 } bcache;
 
 void
@@ -46,6 +49,9 @@ binit(void)
   struct buf *b;
 
   //initlock(&bcache.lock, "bcacheY");
+
+  initlock(&bcache.biglock, "");
+
 
   for(int i = 0; i < NBUCKETS; i++){
     initlock(&bcache.lock[i], "bcacheY");
@@ -134,6 +140,12 @@ bget(uint dev, uint blockno)
   }
 
   // No more bcache in this hashbucket
+
+
+  release(&bcache.lock[i]);
+  acquire(&bcache.biglock);
+  acquire(&bcache.lock[i]);
+
   for(int j = NBUCKETS-1; j > 0; j--){
     if(j != i){
         acquire(&bcache.lock[j]);
@@ -153,6 +165,7 @@ bget(uint dev, uint blockno)
 
                 release(&bcache.lock[j]);
                 release(&bcache.lock[i]);
+                release(&bcache.biglock);
                 acquiresleep(&b->lock);
                 return b;
             }
@@ -160,6 +173,8 @@ bget(uint dev, uint blockno)
         release(&bcache.lock[j]);
     }
   }
+  release(&bcache.lock[i]);
+  release(&bcache.biglock);
 
   panic("bget: no buffers");
 }
