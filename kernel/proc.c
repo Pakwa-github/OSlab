@@ -36,7 +36,10 @@ void procinit(void) {
     if (pa == 0) panic("kalloc");
     uint64 va = KSTACK((int)(p - proc));
     kvmmap(va, (uint64)pa, PGSIZE, PTE_R | PTE_W);
+    
     p->kstack = va;
+    p->kstack_pa = (uint64)pa;
+
   }
   kvminithart();
 }
@@ -103,6 +106,17 @@ found:
     return 0;
   }
 
+  // Pakwa task2
+  // 创建独立内核页表
+  p->k_pagetable = kvmmake();
+  if (p->k_pagetable == 0) {
+    freeproc(p);
+    release(&p->lock);
+    return 0;
+  }
+  // 将内核栈的映射也写进独立内核页表
+  mappages(p->k_pagetable, p->kstack, PGSIZE, p->kstack_pa, PTE_R | PTE_W);
+
   // An empty user page table.
   p->pagetable = proc_pagetable(p);
   if (p->pagetable == 0) {
@@ -136,6 +150,10 @@ static void freeproc(struct proc *p) {
   p->killed = 0;
   p->xstate = 0;
   p->state = UNUSED;
+
+  // Pakwa task2
+  if (p->k_pagetable) proc_free_k_pagetable(p->k_pagetable); 
+  p->k_pagetable = 0;
 }
 
 // Create a user page table for a given process,
@@ -193,6 +211,10 @@ void userinit(void) {
   uvminit(p->pagetable, initcode, sizeof(initcode));
   p->sz = PGSIZE;
 
+  // Pawka task3
+  sync_pagetable(p->pagetable, p->k_pagetable, 0, p->sz);
+
+
   // prepare for the very first "return" from kernel to user.
   p->trapframe->epc = 0;      // user program counter
   p->trapframe->sp = PGSIZE;  // user stack pointer
@@ -216,8 +238,13 @@ int growproc(int n) {
     if ((sz = uvmalloc(p->pagetable, sz, sz + n)) == 0) {
       return -1;
     }
+    // task3
+    sync_pagetable(p->pagetable, p->k_pagetable, sz - n, sz);
+
   } else if (n < 0) {
     sz = uvmdealloc(p->pagetable, sz, sz + n);
+    // task3
+    uvmdealloc(p->k_pagetable, sz, sz - n); // q
   }
   p->sz = sz;
   return 0;
@@ -242,6 +269,9 @@ int fork(void) {
     return -1;
   }
   np->sz = p->sz;
+
+  // Pakwa task3
+  sync_pagetable(np->pagetable, np->k_pagetable, 0, np->sz);
 
   np->parent = p;
 
@@ -430,7 +460,18 @@ void scheduler(void) {
         // before jumping back to us.
         p->state = RUNNING;
         c->proc = p;
+
+        // Pakwa task2
+        // 切换至该进程的独立内核页表
+        w_satp(MAKE_SATP(p->k_pagetable));
+        sfence_vma();
+
         swtch(&c->context, &p->context);
+
+        // Pakwa task2
+        // 恢复至全局内核页表
+        kvminithart();
+
 
         // Process is done running for now.
         // It should have changed its p->state before coming back.
@@ -622,4 +663,16 @@ void procdump(void) {
     printf("%d %s %s", p->pid, state, p->name);
     printf("\n");
   }
+}
+
+void proc_free_k_pagetable(pagetable_t pagetable) {
+  for (int i = 0; i < 512; i++) {
+    pte_t pte = pagetable[i];
+    if ((pte & PTE_V) && (pte & (PTE_R | PTE_W | PTE_X)) == 0) {
+      uint64 child = PTE2PA(pte);
+      proc_free_k_pagetable((pagetable_t)child);
+      pagetable[i] = 0;
+    }
+  }
+  kfree((void *)pagetable);
 }
